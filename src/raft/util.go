@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"6.824ds/src/labgob"
+	"bytes"
 	"log"
 	"math/rand"
 	"time"
@@ -55,4 +57,13 @@ func Min(a, b int) int {
 
 func randElectionTimeoutDuration() time.Duration {
 	return time.Duration(200+rand.Int31n(150)) * time.Millisecond
+}
+
+func (rf *Raft) noLockPersist() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	return w.Bytes()
 }

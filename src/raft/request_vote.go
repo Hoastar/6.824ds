@@ -144,7 +144,7 @@ func (rf *Raft) startElectDaemon() {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-
+	defer rf.persist()
 	if rf.killed() {
 		DPrintf(Info, "Raft instance killed. Quit")
 		return
@@ -196,6 +196,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	rf.persist()
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }

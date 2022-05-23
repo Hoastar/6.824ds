@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"6.824ds/src/labgob"
+	"bytes"
 	"fmt"
 	"log"
 	"sync"
@@ -86,6 +88,10 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
+	rf.mu.Lock()
+	data := rf.noLockPersist()
+	rf.mu.Unlock()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -96,7 +102,23 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var votedFor int
+	var currentTerm int
+	var tmpLog Log
 
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil || d.Decode(&tmpLog) != nil {
+		log.Fatalf("Decode persistent error!")
+	} else {
+		rf.mu.Lock()
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = tmpLog
+		rf.mu.Unlock()
+		DPrintf(Info, "Reading from Persist, votedFor %d, currentTerm %d, Entries %+v", votedFor, currentTerm, tmpLog)
+	}
 }
 
 func (rf *Raft) LogPrintf(format string, a ...interface{}) (n int, err error) {

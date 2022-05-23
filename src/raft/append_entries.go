@@ -26,6 +26,7 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	defer rf.persist()
 	reply.SenderTerm = args.Term
 	if rf.killed() {
 		DPrintf(Info, "Raft instance killed. Quit")
@@ -131,6 +132,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	rf.persist()
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -211,6 +213,12 @@ func (rf *Raft) doProperAppendEntries(server int, term int) { //must be thread s
 		return
 	}
 
+	// handle trim
+	var sendSnapshot = false
+	if rf.leaderData.nextIndex[server] <= rf.log.BaseIndex { // need to send snapshot
+		sendSnapshot = true
+	}
+
 	PrevLogIndex := Max(rf.leaderData.nextIndex[server]-1, rf.log.BaseIndex)
 	PrevLogTerm := rf.log.Get(PrevLogIndex).Term
 	entrySlice := rf.log.SliceFrom(PrevLogIndex + 1)
@@ -219,6 +227,10 @@ func (rf *Raft) doProperAppendEntries(server int, term int) { //must be thread s
 
 	args := &AppendEntriesArgs{rf.currentTerm, rf.me, PrevLogIndex, PrevLogTerm, entries, rf.commitIndex}
 	rf.mu.Unlock()
+
+	if sendSnapshot {
+		rf.doInstallSnapshot(server)
+	}
 
 	DPrintf(Info, "Sending append to server %d: currentTerm: %d PrevLogIndex: %d PrevLogTerm: %d EntriyNum %d",
 		server, args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
