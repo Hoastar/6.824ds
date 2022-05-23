@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,9 +28,6 @@ const (
 	backLoopRefresh  = -2 // refresh timer since a recent heartbeat sent
 )
 
-//
-// A Go object implementing a single Raft peer.
-//
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -41,21 +39,28 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-	role         int      // leader candidate folower
+	role         int      // leader candidate follower
 	backLoopChan chan int // chan talk to the background thread
 
 	// raft persist state
 	currentTerm int
 	votedFor    int
+	log         Log
+
+	// raft common volatile state
+	commitIndex int
+	lastApplied int
+
+	// leader data
+	leaderData *LeaderData
 
 	// apply Chan
 	applyCh chan ApplyMsg
 }
 
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
+type LeaderData struct { // will update each term
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -94,12 +99,37 @@ func (rf *Raft) readPersist(data []byte) {
 
 }
 
+func (rf *Raft) LogPrintf(format string, a ...interface{}) (n int, err error) {
+	s := fmt.Sprintf(format, a...)
+	return DPrintf(Info, "[Server %d]: %s", rf.me, s)
+}
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := false
 
 	// Your code here (2B).
+
+	rf.mu.Lock()
+	index = rf.log.Get(rf.log.LastIndex()).CommandIndex + 1 // previous Entries command index + 1
+	term = rf.currentTerm
+	isLeader = rf.role == Leader
+	if isLeader {
+		rf.log.Append(LogEntry{CommandTypeCommand, command, index, term})
+		rf.leaderData.matchIndex[rf.me] = rf.log.LastIndex()
+	}
+	rf.mu.Unlock()
+
+	if isLeader {
+		DPrintf(Info, "Receving Command %+v: nextIndex: %d, term: %d", command,
+			index, term)
+		for i, _ := range rf.peers {
+			if i != rf.me {
+				go rf.doProperAppendEntries(i, term)
+			}
+		}
+	}
 
 	return index, term, isLeader
 }
@@ -111,7 +141,7 @@ func (rf *Raft) sawTerm(Term int, msg string) (changed bool) {
 	var previous int
 	rf.mu.Lock()
 	previous = rf.currentTerm
-	if Term > rf.currentTerm { // saw a lager term, return to follwer
+	if Term > rf.currentTerm { // saw a lager term, return to follower
 		rf.currentTerm = Term
 		rf.votedFor = -1 // reset voting
 		changed = true
@@ -122,7 +152,7 @@ func (rf *Raft) sawTerm(Term int, msg string) (changed bool) {
 	}
 	rf.mu.Unlock()
 	if changed {
-		DPrintf(Debug, "Saw term %d which is larger than current: %d, %s. Become follower\n", Term, previous, msg)
+		DPrintf(Info, "Saw term %d which is larger than current: %d, %s. Become follower", Term, previous, msg)
 	}
 	if becomeFollower {
 		go rf.followerBackLoop()
@@ -130,52 +160,41 @@ func (rf *Raft) sawTerm(Term int, msg string) (changed bool) {
 	return changed
 }
 
-func (rf *Raft) leaderBackLoopDaemon(term int) {
-	electionDeadline := time.Now().Add(randElectionTimeoutDuration())
+func (rf *Raft) leaderBackLoop(term int) {
+	DPrintf(Info, "Leader back loop started")
+
 	for {
 		if rf.killed() {
-			//fmt.Printf("Raft instance killed. Quit\n")
+			DPrintf(Info, "Raft instance killed. Quit")
 			return
 		}
+
 		var stillLeader = false
-		var leadId int
 		rf.mu.Lock()
 		stillLeader = rf.role == Leader && term == rf.currentTerm
-		leadId = rf.me
 		rf.mu.Unlock()
 
 		if !stillLeader { // check if is leader
-			DPrintf(Warning, "No longer the leader. Quit Term %d\n", term)
+			DPrintf(Info, "No longer the leader. Quit Term %d", term)
 			return
 		}
 
-		if time.Now().After(electionDeadline) {
-			DPrintf(Warning, "LeaderBackLoop: Election timemout with no leader, start a new term for election\n")
-			rf.mu.Lock()
-			rf.role = Follower
-			rf.votedFor = -1
-			go rf.followerBackLoop()
-			rf.mu.Unlock()
-			break
-		}
-
-		for server, _ := range rf.peers {
-			if server == leadId {
-				electionDeadline = time.Now().Add(randElectionTimeoutDuration())
-				continue
-			} else {
-				DPrintf(Debug, "Heartbeat to server %v term %v;\n", server, term)
-				go rf.doProperAppendEntries(server, term) // it's ok to send AppendEntries even if the server is no longer the true leader
+		for i, _ := range rf.peers { // send heartbeat to all followers
+			if i != rf.me {
+				go rf.doProperAppendEntries(i, term) // it's ok to send AppendEntries even if the server is no longer the true leader
 			}
 		}
+
 		time.Sleep(heartBeatInterval)
 	}
-
 }
 
 func (rf *Raft) followerBackLoop() {
-	DPrintf(Debug, "Follower server start loop;\n")
+
+	// begin as a follower
 	nowTimeout := randElectionTimeoutDuration()
+	DPrintf(Info, "Start the follower with timeout %d milliseconds", int64(nowTimeout)/1e6)
+
 	for {
 		select {
 		case recv := <-rf.backLoopChan:
@@ -183,23 +202,34 @@ func (rf *Raft) followerBackLoop() {
 			case backLoopWakeKill:
 				return
 			case backLoopRefresh:
-				nowTimeout = randElectionTimeoutDuration()
 				continue
 			default:
-				fmt.Printf("Receved an unexpected msg.\n")
+				DPrintf(Info, "Received an unexpected msg.")
 			}
 		case <-time.After(nowTimeout):
 			if rf.killed() {
-				DPrintf(Warning, "followerBackLoop: Raft instance killed. Quit\n")
+				DPrintf(Info, "Raft instance killed. Quit")
 				return
 			}
-			DPrintf(Debug, "Heartbeat timeout, server start loop\n")
+			// follower timeout start a new election, and quit this loop
+			DPrintf(Info, "Raft server %d (follower) timeout, start a new election", rf.me)
 			go rf.startElectDaemon()
 			return
 		}
 	}
 }
 
+//
+// the tester doesn't halt goroutines created by Raft after each test,
+// but it does call the Kill() method. your code can use killed() to
+// check whether Kill() has been called. the use of atomic avoids the
+// need for a lock.
+//
+// the issue is that long-running goroutines use memory and may chew
+// up CPU time, perhaps causing later tests to fail and generating
+// confusing debug output. any goroutine with a long-running loop
+// should call killed() to check whether it should stop.
+//
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
@@ -210,22 +240,45 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+//
+// the service or tester wants to create a Raft server. the ports
+// of all the Raft servers (including this one) are in peers[]. this
+// server's port is peers[me]. all the servers' peers[] arrays
+// have the same order. persister is a place for this server to
+// save its persistent state, and also initially holds the most
+// recent saved state, if any. applyCh is a channel on which the
+// tester or service expects Raft to send ApplyMsg messages.
+// Make() must return quickly, so it should start goroutines
+// for any long-running work.
+//
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+
+	// setting logger attr
+	log.SetFlags(log.LstdFlags | log.Lshortfile | log.Lmicroseconds)
+
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
-	// Your initialization code here (2A, 2B, 2C).
-	// 2A
-	DPrintf(Debug, "Init raft instance... \n")
+	// append a empty Entries for the initial consistance
 	rf.currentTerm = 0
 	rf.votedFor = -1
+	rf.log.Append(LogEntry{CommandTypeNoop, nil, 0, 0})
+
 	rf.backLoopChan = make(chan int)
+
+	// still set committed and applied to 0
+	rf.commitIndex = 0 // mark it as commited
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	rf.lastApplied = rf.log.BaseIndex // set the last applied to the position of snapshot
+
+	// start raft as follower
 	go rf.followerBackLoop()
 	return rf
 }

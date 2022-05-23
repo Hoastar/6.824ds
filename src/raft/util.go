@@ -54,5 +54,5 @@ func Min(a, b int) int {
 }
 
 func randElectionTimeoutDuration() time.Duration {
-	return time.Duration(250+rand.Int31n(150)) * time.Millisecond
+	return time.Duration(200+rand.Int31n(150)) * time.Millisecond
 }
