@@ -91,6 +91,8 @@ func (rf *Raft) persist() {
 	rf.mu.Lock()
 	data := rf.noLockPersist()
 	rf.mu.Unlock()
+
+	// 持久化（目前还是在内存中）到 persister.raftstate
 	rf.persister.SaveRaftState(data)
 }
 
@@ -102,6 +104,8 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
+
+	// 读取持久化的raft state
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var votedFor int
@@ -110,8 +114,9 @@ func (rf *Raft) readPersist(data []byte) {
 
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil || d.Decode(&tmpLog) != nil {
-		log.Fatalf("Decode persistent error!")
+		log.Fatalf("Decode persistent error!") // 解码失败
 	} else {
+		// 重读state到raft实例中
 		rf.mu.Lock()
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
@@ -196,6 +201,7 @@ func (rf *Raft) leaderBackLoop(term int) {
 		stillLeader = rf.role == Leader && term == rf.currentTerm
 		rf.mu.Unlock()
 
+		// 确保在SendAppendEntries前,当前raft.role仍然是Leader
 		if !stillLeader { // check if is leader
 			DPrintf(Info, "No longer the leader. Quit Term %d", term)
 			return
@@ -203,6 +209,7 @@ func (rf *Raft) leaderBackLoop(term int) {
 
 		for i, _ := range rf.peers { // send heartbeat to all followers
 			if i != rf.me {
+				// 并行的发起SendAppendEntries
 				go rf.doProperAppendEntries(i, term) // it's ok to send AppendEntries even if the server is no longer the true leader
 			}
 		}
@@ -224,11 +231,13 @@ func (rf *Raft) followerBackLoop() {
 			case backLoopWakeKill:
 				return
 			case backLoopRefresh:
+				// reset election timeout
+				nowTimeout = randElectionTimeoutDuration()
 				continue
 			default:
 				DPrintf(Info, "Received an unexpected msg.")
 			}
-		case <-time.After(nowTimeout):
+		case <-time.After(nowTimeout): // 超时
 			if rf.killed() {
 				DPrintf(Info, "Raft instance killed. Quit")
 				return

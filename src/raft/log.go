@@ -33,6 +33,7 @@ func (rl *Log) Get(index int) *LogEntry {
 	return &rl.Entries[index-rl.BaseIndex]
 }
 
+// LastIndex returns the index value of the last log entry for the current raft instance
 func (rl *Log) LastIndex() int {
 	return len(rl.Entries) - 1 + rl.BaseIndex
 }

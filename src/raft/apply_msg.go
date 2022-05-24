@@ -20,6 +20,7 @@ func (rf *Raft) applyMsg() {
 		DPrintf(Info, "bad commit index! commitIndex %d, log len %d", rf.commitIndex, rf.log.LastIndex()+1)
 	}
 	DPrintf(Info, "start sending index %d this log is to detect blocking time", i)
+	// lastApplied 递增
 	for ; i <= rf.commitIndex; i++ {
 		entry := *rf.log.Get(i)
 		var msg ApplyMsg
@@ -33,6 +34,8 @@ func (rf *Raft) applyMsg() {
 		rf.applyCh <- msg
 		DPrintf(Info, "send index %d, commit index %d, msg: %+v", i, rf.commitIndex, msg)
 	}
+
+	// 将lastApplied更新到最新
 	rf.lastApplied = i - 1
 	rf.mu.Unlock()
 }
