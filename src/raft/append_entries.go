@@ -96,9 +96,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			j++
 		}
 
+		// rf.log.Get(args.PrevLogIndex).Term == args.PrevLogTerm 保证了日志在args.PrevLogIndex处的Term等于args.PrevLogTerm
 		for ; nextIndex <= rf.log.LastIndex() && j < len(args.Entries); nextIndex++ {
 			// check conflict. no conflict means the same entry
-			if rf.log.Get(nextIndex).Term != args.Entries[j].Term {
+			// entries日志是Leader自PrevLogIndex+1起的新日志条目
+			if rf.log.Get(nextIndex).Term != args.Entries[j].Term { // 不等于便是不相同的条目
 				findConflict = true
 				break
 			}
@@ -144,7 +146,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	} else { // not PrevLogIndex not match, PrevLogIndex must be after the snapshot
 		// Implement AppendEntries RPC
-		// 2.1.2 not matched (5.3 节)
+		// 2.1.2 not matched (5.3 节): prevLogIndex相对于接收者的LastLogIndex太过超前
 		// 找到冲突的索引位置以及对应的任期
 		conflictIndex := Min(args.PrevLogIndex, rf.log.LastIndex())
 		reply.TermConflict = rf.log.Get(conflictIndex).Term // so it's safe to Get()

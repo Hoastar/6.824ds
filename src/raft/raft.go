@@ -89,6 +89,7 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	rf.mu.Lock()
+
 	data := rf.noLockPersist()
 	rf.mu.Unlock()
 

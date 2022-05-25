@@ -50,7 +50,9 @@ func (rl *Log) DiscardBefore(index int) {
 	if index > lastIndex {
 		panic(fmt.Sprintf("Try to discard: %d, but last index %d", index, lastIndex))
 	}
-	newEntries := make([]LogEntry, len(rl.Entries)-index+rl.BaseIndex)
+	// 确定entries长度
+	newEntries := make([]LogEntry, len(rl.Entries)+rl.BaseIndex-index)
+	// index与l.BaseIndex相差多少，那就将rf.Entries前提多少开始裁剪
 	copy(newEntries, rl.Entries[index-rl.BaseIndex:])
 	rl.BaseIndex = index
 	rl.Entries = newEntries

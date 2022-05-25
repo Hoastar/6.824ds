@@ -16,7 +16,7 @@ const (
 	Test
 )
 
-const isOpen = 1
+const isOpen = 0
 
 func DPrintf(logLevel int, format string, a ...interface{}) (n int, err error) {
 	log.SetFlags(log.Lmicroseconds)
@@ -60,7 +60,7 @@ func randElectionTimeoutDuration() time.Duration {
 }
 
 func (rf *Raft) noLockPersist() []byte {
-	// persist state: currentTerm, votedFor, log
+	// return persist state: currentTerm, votedFor, log
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
