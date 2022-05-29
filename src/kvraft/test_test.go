@@ -1,17 +1,20 @@
 package kvraft
 
-import "../porcupine"
-import "../models"
-import "testing"
-import "strconv"
-import "time"
-import "math/rand"
-import "log"
-import "strings"
-import "sync"
-import "sync/atomic"
-import "fmt"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"6.824ds/src/models"
+	"6.824ds/src/porcupine"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -19,7 +22,7 @@ const electionTimeout = 1 * time.Second
 
 const linearizabilityCheckTimeout = 1 * time.Second
 
-// get/put/putappend that keep counts
+// get/put/append that keep counts
 func Get(cfg *config, ck *Clerk, key string) string {
 	v := ck.Get(key)
 	cfg.op()
@@ -641,7 +644,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	}
 
 	// check that the majority partition has thrown away
-	// most of its log entries.
+	// most of its log log.
 	sz := cfg.LogSize()
 	if sz > 8*maxraftstate {
 		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
