@@ -20,8 +20,6 @@ package shardmaster
 // The number of shards.
 const NShards = 10
 
-// A configuration -- an assignment of shards to groups.
-// Please don't change this.
 type Config struct {
 	Num    int              // config number
 	Shards [NShards]int     // shard -> gid
@@ -36,6 +34,7 @@ type Err string
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
+	Id      string
 }
 
 type JoinReply struct {
@@ -45,6 +44,7 @@ type JoinReply struct {
 
 type LeaveArgs struct {
 	GIDs []int
+	Id   string
 }
 
 type LeaveReply struct {
@@ -55,6 +55,7 @@ type LeaveReply struct {
 type MoveArgs struct {
 	Shard int
 	GID   int
+	Id    string
 }
 
 type MoveReply struct {
@@ -64,10 +65,25 @@ type MoveReply struct {
 
 type QueryArgs struct {
 	Num int // desired config number
+	Id  string
 }
 
 type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+func CopyConfig(dst *Config, src *Config) {
+	dst.Num = src.Num
+	dst.Shards = src.Shards
+	if src.Groups == nil {
+		dst.Groups = nil
+	} else {
+		dst.Groups = make(map[int][]string)
+		for k, v := range src.Groups {
+			dst.Groups[k] = make([]string, len(v))
+			copy(dst.Groups[k], v)
+		}
+	}
 }
