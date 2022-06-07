@@ -1,5 +1,17 @@
 package shardkv
 
+import (
+	"6.824ds/src/labrpc"
+	"6.824ds/src/shardmaster"
+	"crypto/rand"
+	"fmt"
+	"log"
+	"math/big"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
 //
 // client code to talk to a sharded key/value service.
 //
@@ -7,12 +19,6 @@ package shardkv
 // the assignment of shards (keys) to groups, and then
 // talks to the group that holds the key's shard.
 //
-
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
-import "../shardmaster"
-import "time"
 
 //
 // which shard is a key in?
@@ -40,6 +46,12 @@ type Clerk struct {
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	lastleaders    map[int]int
+	id             string
+	requestcounter int64
+
+	mu sync.Mutex
 }
 
 //
@@ -56,7 +68,80 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+
+	ck.lastleaders = make(map[int]int)
+	// gen unique id by now % seconds and obj addr
+	// ck.id = fmt.Sprintf("", time.Now().UnixNano()%10e9, &ck)
+	ck.id = randstring(5)
+	atomic.StoreInt64(&ck.requestcounter, 0)
+
 	return ck
+}
+
+func (ck *Clerk) GenRequestId() string {
+	rid := atomic.AddInt64(&ck.requestcounter, 1)
+	return fmt.Sprintf("%s:%d", ck.id, rid)
+}
+
+func (ck *Clerk) LogPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug > 0 {
+		s := fmt.Sprintf(format, a...)
+		log.Printf("[client %s] %s", ck.id, s)
+	}
+	return
+}
+
+func (ck *Clerk) DoRequest(servicename string, args *OperationArgs, reply *OperationReply) {
+	// args and reply are pointers
+
+	// serialized request
+
+	ck.mu.Lock()
+	args.Id = ck.GenRequestId()
+	for {
+		shard := key2shard(args.Key)
+		gid := ck.config.Shards[shard]
+
+		if _, ok := ck.lastleaders[gid]; !ok {
+			ck.lastleaders[gid] = 0
+		}
+		lastleader := ck.lastleaders[gid]
+
+		if servers, ok := ck.config.Groups[gid]; ok {
+
+			for notok := 0; notok < len(servers); lastleader = (lastleader + 1) % len(servers) {
+				srv := ck.make_end(servers[lastleader])
+
+				*reply = OperationReply{} // set reply to emtpy everytime
+
+				ck.LogPrintf("Calling %s to gid %d server %d with shard %d args %+v", servicename, gid, lastleader, shard, args)
+				ok := srv.Call(servicename, args, reply)
+				ck.LogPrintf("Calls return ok: %t reply: %+v", ok, reply)
+				// unaccessible or wrong leader
+				if ok && reply.Err == ErrWrongLeader {
+					// try next leader
+				} else if ok && reply.Err == ErrWrongGroup { // next server if return fail or wrong server. An unacesssible server will return fail
+					//TODO need to inc reques id?
+					break
+				} else if ok { // good!
+					ck.lastleaders[gid] = lastleader
+					ck.LogPrintf("request %+v got reply from server %d: %+v", args, lastleader, reply)
+					ck.mu.Unlock()
+					return
+				} else { // not ok try next, maybe group has shutdown
+					notok++
+				}
+				time.Sleep(time.Millisecond * 20) // don't ask next server too quick
+			}
+		}
+
+		time.Sleep(100 * time.Millisecond)
+
+		// ask master for the latest configuration.
+		ck.config = ck.sm.Query(-1)
+
+	}
+
 }
 
 //
@@ -66,33 +151,15 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
+	args := OperationArgs{}
 	args.Key = key
+	args.Op = OpTypeGet
 
-	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			// try each server for the shard.
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				var reply GetReply
-				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					return reply.Value
-				}
-				if ok && (reply.Err == ErrWrongGroup) {
-					break
-				}
-				// ... not ok, or ErrWrongLeader
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-		// ask master for the latest configuration.
-		ck.config = ck.sm.Query(-1)
-	}
+	var reply OperationReply
 
-	return ""
+	ck.DoRequest("ShardKV.Get", &args, &reply)
+
+	return reply.Value
 }
 
 //
@@ -100,38 +167,18 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
+	args := OperationArgs{}
 	args.Key = key
 	args.Value = value
 	args.Op = op
 
-
-	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				var reply PutAppendReply
-				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if ok && reply.Err == OK {
-					return
-				}
-				if ok && reply.Err == ErrWrongGroup {
-					break
-				}
-				// ... not ok, or ErrWrongLeader
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-		// ask master for the latest configuration.
-		ck.config = ck.sm.Query(-1)
-	}
+	var reply OperationReply
+	ck.DoRequest("ShardKV.PutAppend", &args, &reply)
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, OpTypePut)
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, OpTypeAppend)
 }

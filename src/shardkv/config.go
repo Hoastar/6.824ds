@@ -1,21 +1,24 @@
 package shardkv
 
-import "../shardmaster"
-import "../labrpc"
-import "testing"
-import "os"
+import (
+	"os"
+	"testing"
 
-// import "log"
-import crand "crypto/rand"
-import "math/big"
-import "math/rand"
-import "encoding/base64"
-import "sync"
-import "runtime"
-import "../raft"
-import "strconv"
-import "fmt"
-import "time"
+	"6.824ds/src/labrpc"
+	"6.824ds/src/shardmaster"
+
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"math/rand"
+	"runtime"
+	"strconv"
+	"sync"
+	"time"
+
+	"6.824ds/src/raft"
+)
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -66,7 +69,7 @@ type config struct {
 
 	clerks       map[*Clerk][]string
 	nextClientId int
-	maxraftstate int
+	maxRaftState int
 }
 
 func (cfg *config) checkTimeout() {
@@ -90,12 +93,12 @@ func (cfg *config) checklogs() {
 		for i := 0; i < cfg.n; i++ {
 			raft := cfg.groups[gi].saved[i].RaftStateSize()
 			snap := len(cfg.groups[gi].saved[i].ReadSnapshot())
-			if cfg.maxraftstate >= 0 && raft > 8*cfg.maxraftstate {
-				cfg.t.Fatalf("persister.RaftStateSize() %v, but maxraftstate %v",
-					raft, cfg.maxraftstate)
+			if cfg.maxRaftState >= 0 && raft > 8*cfg.maxRaftState {
+				cfg.t.Fatalf("persister.RaftStateSize() %v, but maxRaftState %v",
+					raft, cfg.maxRaftState)
 			}
-			if cfg.maxraftstate < 0 && snap > 0 {
-				cfg.t.Fatalf("maxraftstate is -1, but snapshot is non-empty!")
+			if cfg.maxRaftState < 0 && snap > 0 {
+				cfg.t.Fatalf("maxRaftState is -1, but snapshot is non-empty!")
 			}
 		}
 	}
@@ -240,7 +243,7 @@ func (cfg *config) StartServer(gi int, i int) {
 	}
 	cfg.mu.Unlock()
 
-	gg.servers[i] = StartServer(ends, i, gg.saved[i], cfg.maxraftstate,
+	gg.servers[i] = StartServer(ends, i, gg.saved[i], cfg.maxRaftState,
 		gg.gid, mends,
 		func(servername string) *labrpc.ClientEnd {
 			name := randstring(20)
@@ -332,7 +335,7 @@ func (cfg *config) leavem(gis []int) {
 
 var ncpu_once sync.Once
 
-func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config {
+func make_config(t *testing.T, n int, unreliable bool, maxRaftState int) *config {
 	ncpu_once.Do(func() {
 		if runtime.NumCPU() < 2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
@@ -342,7 +345,7 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	runtime.GOMAXPROCS(4)
 	cfg := &config{}
 	cfg.t = t
-	cfg.maxraftstate = maxraftstate
+	cfg.maxRaftState = maxRaftState
 	cfg.net = labrpc.MakeNetwork()
 	cfg.start = time.Now()
 

@@ -1,11 +1,14 @@
 package raft
 
 import (
-	"6.824ds/src/labgob"
 	"bytes"
+	"compress/zlib"
+	"io"
 	"log"
 	"math/rand"
 	"time"
+
+	"6.824ds/src/labgob"
 )
 
 // Debugging
@@ -67,4 +70,34 @@ func (rf *Raft) noLockPersist() []byte {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 	return w.Bytes()
+}
+
+func Compress(in []byte) []byte {
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	zw.Write(in)
+	zw.Close()
+	return b.Bytes()
+}
+
+func Decompress(in []byte) []byte {
+	buf := make([]byte, 1024)
+	var out []byte
+
+	zr, err := zlib.NewReader(bytes.NewBuffer(in))
+	if err != nil {
+		panic(err)
+	}
+	for {
+		n, err := zr.Read(buf)
+		out = append(out, buf[:n]...)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			panic(err)
+		}
+
+	}
+	zr.Close()
+	return out
 }
