@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// Operation type
 const (
 	OpTypeGet        = "get"
 	OpTypePut        = "put"
@@ -20,21 +21,29 @@ const (
 	OpTypeConfigDone = "cfgDone"
 )
 
+// ShardDB shard database
 type ShardDB struct {
 	ID int
 	DB map[string]string
 }
 
+// Op operation struct
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 
-	OpType        string
-	Key           string
-	Value         string
-	Config        int
-	Shard         ShardDB
+	OpType string
+	Key    string
+	Value  string
+
+	// Config num
+	Config int
+
+	// shard data
+	Shard ShardDB
+
+	// 该客户端执行成功的 seq -> OpRecord
 	ClientSuccess map[string]OpRecord
 	OpId          string
 }
@@ -51,27 +60,33 @@ const (
 	NotifyMsgInfoAppOK      = "appok"
 	NotifyMsgInfoNotLeader  = "notleader"
 	NotifyMsgInfoWrongGroup = "wg"
+	CfgNotifyMsgInfoRun     = "run"
 )
 
+// Pending 待处理的事项
 type Pending struct {
-	OpId     string
-	index    int
-	term     int
+	OpId  string
+	index int
+	term  int
+
+	// 指定Channel等待结果
 	notifyCh chan NotifyMsg
 }
 
-const CfgNotifyMsgInfoRun = "run"
-
+// CfgNotifyMsg 配置同步时的通知信息
 type CfgNotifyMsg struct {
 	Info   string
 	Config int
 }
 
+// CfgPending 配置同步时新建的待处理的事项
 type CfgPending struct {
+	// config num: config 在 ShardMaster.configs中的索引
 	ConfigNum int
 	notifyCh  chan CfgNotifyMsg
 }
 
+// OpRecord 客户端Operation记录以及相应的相应结果
 type OpRecord struct {
 	OpSeq  int
 	NtfMsg NotifyMsg
@@ -79,35 +94,31 @@ type OpRecord struct {
 
 type ShardKV struct {
 	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	applyCh      chan raft.ApplyMsg
-	make_end     func(string) *labrpc.ClientEnd
-	gid          int
-	masters      []*labrpc.ClientEnd
-	maxRaftState int // snapshot if log grows this big
+	me           int                            // shardKV index in group
+	rf           *raft.Raft                     // raft instance
+	applyCh      chan raft.ApplyMsg             // talk to raft
+	make_end     func(string) *labrpc.ClientEnd // create client with serverName(string)
+	gid          int                            // group id
+	masters      []*labrpc.ClientEnd            // clients
+	maxRaftState int                            // snapshot if log grows this big
 
 	// Your definitions here.
-	persister *raft.Persister
-	mck       *shardmaster.Clerk
-	configNum int
-
-	// To determine is still leader
-	// raftIndex   int
-	// latest term server can observe from applyMsg
-	raftNowTerm int64
+	persister   *raft.Persister    // 持久化
+	mck         *shardmaster.Clerk // ShardMaster clerk(client)
+	configNum   int                // 当前使用的config的索引
+	raftNowTerm int64              // latest term server can observe from applyMsg(从applyMsg返回的最新的任期)
 
 	// notification when command applied
 	pendingByOpId map[string]*Pending
 
-	// kv database
+	// kv database: shardNum -> shardData
 	db map[int]ShardDB
 
-	// op record clientid -> client op
-	successRecords map[string]OpRecord
+	// op record: clientId -> client op
+	successRecords map[string]OpRecord // 保证线性化处理operation
 
 	// silly way to avoid blocking the chan
-	bufferChan chan raft.ApplyMsg
+	bufferChan chan raft.ApplyMsg // 避免阻塞的bufferChan
 
 	// is config updating
 	isReConf bool
@@ -116,6 +127,9 @@ type ShardKV struct {
 	cfgPendingCh chan CfgNotifyMsg
 
 	// config which is updating
+
+	// shard访问策略，它表明ShardX是否在迁移中，前一种会拒绝服务请求；迁移完成后，重置回false
+	// 相当于一个细粒度的锁
 	shardAccess [shardmaster.NShards]bool
 
 	// config history for shard GC
@@ -147,7 +161,7 @@ func (kv *ShardKV) LogPrintf(format string, a ...interface{}) (n int, err error)
 	return
 }
 
-func (kv *ShardKV) FindRecordAndSet(opId string, reply *OperationReply, setreplyOK func(*OperationReply, NotifyMsg)) bool {
+func (kv *ShardKV) FindRecordAndSet(opId string, reply *OperationReply, setReplyOk func(*OperationReply, NotifyMsg)) bool {
 
 	found := false
 	cl, seq := splitId(opId)
@@ -157,7 +171,7 @@ func (kv *ShardKV) FindRecordAndSet(opId string, reply *OperationReply, setreply
 		log.Fatalf("client id %s: stored opId > current opId. stored %d %+v, current %d", cl, clientRecord.OpSeq, clientRecord.NtfMsg, seq)
 	} else if ok1 && clientRecord.OpSeq == seq { // found existing record ,this is dup request
 		found = true
-		setreplyOK(reply, clientRecord.NtfMsg)
+		setReplyOk(reply, clientRecord.NtfMsg)
 	} else {
 		// nothing found
 	}
@@ -176,8 +190,8 @@ func (kv *ShardKV) SaveRecord(opId string, notifyMsg NotifyMsg) {
 	kv.successRecords[cl] = OpRecord{seq, notifyMsg}
 }
 
-func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setreplyOK func(*OperationReply, NotifyMsg)) {
-	// setreplyerr: err since not leader
+func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setReplyOk func(*OperationReply, NotifyMsg)) {
+	// setReplyErr: err since not leader
 
 	setReplyErr := func(reply *OperationReply) {
 		reply.Err = ErrWrongLeader
@@ -208,7 +222,7 @@ func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setreplyOK f
 	}
 
 	// check if is dup record
-	if kv.FindRecordAndSet(args.Id, reply, setreplyOK) {
+	if kv.FindRecordAndSet(args.Id, reply, setReplyOk) {
 		kv.LogPrintf("Found args %+v called previously, return %+v", args, reply)
 		return
 	}
@@ -217,7 +231,8 @@ func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setreplyOK f
 	kv.mu.Lock()
 
 	shardId := key2shard(args.Key)
-	if !kv.shardAccess[shardId] { // accessible
+	if !kv.shardAccess[shardId] {
+		// inaccessible
 		kv.LogPrintf("Wrong group for shard: %d. Return ErrWrongGroup, current cfg %+v, updating %t", shardId, kv.configNum, kv.isReConf)
 		reply.Err = ErrWrongGroup
 		kv.mu.Unlock()
@@ -228,7 +243,7 @@ func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setreplyOK f
 	index, submitTerm, isLeader := kv.rf.Start(commandOp)
 
 	if !isLeader {
-		kv.LogPrintf("Not leader when calling Start(), reject with ErrWronleader")
+		kv.LogPrintf("Not leader when calling Start(), reject with ErrWrongleader")
 		setReplyErr(reply)
 		kv.mu.Unlock()
 		return
@@ -238,6 +253,7 @@ func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setreplyOK f
 	pending := kv.MakePending(commandOp.OpId, index, submitTerm)
 	kv.mu.Unlock()
 
+	// 指定Channel同步等待raft结果
 	notifyMsg := <-pending.notifyCh // must wait for the notification, even lose the leader state
 	if notifyMsg.Info == NotifyMsgInfoNotLeader {
 		setReplyErr(reply)
@@ -246,9 +262,10 @@ func (kv *ShardKV) DoOp(args *OperationArgs, reply *OperationReply, setreplyOK f
 		reply.Err = ErrWrongGroup
 		kv.LogPrintf("Op %+v failed since it's updating: %+v", commandOp, notifyMsg)
 	} else {
-		setreplyOK(reply, notifyMsg)
+		setReplyOk(reply, notifyMsg)
 		kv.LogPrintf("Got notification op %+v success: %+v", commandOp, notifyMsg)
 	}
+	close(pending.notifyCh)
 }
 
 func (kv *ShardKV) Get(args *OperationArgs, reply *OperationReply) {
@@ -273,7 +290,36 @@ func (kv *ShardKV) DeletePending(p *Pending) { // should be called when holding 
 	delete(kv.pendingByOpId, p.OpId)
 }
 
-func (kv *ShardKV) NotifyOpDone(opId string, index int, successmsg NotifyMsg, opterm int) {
+func (kv *ShardKV) PendingGC(currentTerm int) {
+	// gc for pending only called when saw op not self
+
+	// calling getstate in server is dangerous for deadlock
+	// currentTerm, _ := kv.rf.GetState()
+	kv.LogPrintf("Starting GC: current term is %d", currentTerm)
+	var pendingsToFail []*Pending
+
+	kv.mu.Lock()
+	if len(kv.pendingByOpId) != 0 {
+		for _, p := range kv.pendingByOpId {
+			// old term pending exists means failure
+			// should never gc term >= current even is not leader at line 252
+			// since it can become leader immediately with a higer term > currentTerm
+			if p.term < currentTerm {
+				pendingsToFail = append(pendingsToFail, p)
+			}
+		}
+		for _, p := range pendingsToFail {
+			kv.DeletePending(p) // delete all pending
+		}
+	}
+	kv.mu.Unlock()
+	for _, p := range pendingsToFail {
+		kv.LogPrintf("Pending %+v is marked as fail since it's term too old. current term %d", p, currentTerm)
+		p.notifyCh <- NotifyMsg{NotifyMsgInfoNotLeader, ""}
+	}
+}
+
+func (kv *ShardKV) NotifyOpDone(opId string, index int, successMsg NotifyMsg, opTerm int) {
 	// find whether
 	kv.mu.Lock()
 
@@ -289,7 +335,7 @@ func (kv *ShardKV) NotifyOpDone(opId string, index int, successmsg NotifyMsg, op
 	issuedBySelf := false
 	if p, ok = kv.pendingByOpId[opId]; ok {
 		kv.LogPrintf("Notifying pending %+v since op success", p)
-		notifyMsg = successmsg
+		notifyMsg = successMsg
 		kv.DeletePending(p)
 		issuedBySelf = true
 	} else { // not found, not this server's pending
@@ -298,11 +344,14 @@ func (kv *ShardKV) NotifyOpDone(opId string, index int, successmsg NotifyMsg, op
 	}
 	kv.mu.Unlock()
 	if p != nil {
-		go func() { p.notifyCh <- notifyMsg }() // non blocking for receive fromm apply
+		// non blocking for receive from apply
+		go func() {
+			p.notifyCh <- notifyMsg
+		}()
 	}
 
 	if !issuedBySelf {
-		kv.PendingGC(opterm) //seems to be ok to run async. but i don't
+		kv.PendingGC(opTerm) //seems to be ok to run async. but i don't
 	}
 
 }
@@ -330,6 +379,8 @@ func (kv *ShardKV) LogApplier() {
 					data := applyMsg.Command.([]byte)
 					// gc before snapshot is installed
 					kv.PendingGC(applyMsg.Term)
+
+					// install snapshot
 					kv.InstallSnapshot(data)
 				}
 				continue
@@ -339,8 +390,10 @@ func (kv *ShardKV) LogApplier() {
 			commandOp := _commandOp // copy op to avoid race
 			CopyShardDB(&commandOp.Shard, _commandOp.Shard)
 
+			// 确保需要迁移的shard是否完成
 			allUpdated := func() {
 				migrationDone := true
+				// query new config
 				configUpdating := kv.mck.Query(kv.configNum + 1)
 				for shardId, gid := range configUpdating.Shards {
 					if gid == kv.gid && !kv.shardAccess[shardId] { // found something missing
@@ -348,8 +401,10 @@ func (kv *ShardKV) LogApplier() {
 						break
 					}
 				}
-				if migrationDone {
+				if migrationDone { // migrate Done
+					// reset isReConf
 					kv.isReConf = false
+					// update config index
 					kv.configNum = commandOp.Config
 					kv.LogPrintf("All needed done, update to the new cfg")
 				}
@@ -357,15 +412,15 @@ func (kv *ShardKV) LogApplier() {
 
 			// is config update
 			if commandOp.OpType == OpTypeConfig {
-				kv.LogPrintf("Receving config update isreconf %t, current cfg %+v, newcfg %+v, access: %+v", kv.isReConf, kv.configNum, commandOp.Config, kv.shardAccess)
+				kv.LogPrintf("Receiving config update isreconf %t, current cfg %+v, newcfg %+v, access: %+v", kv.isReConf, kv.configNum, commandOp.Config, kv.shardAccess)
 				kv.mu.Lock()
 				if commandOp.Config <= kv.configNum { // only update one config once, even multiple update
-					kv.LogPrintf("applier update config: current %+v recevied %+v, num is old, skip", kv.configNum, commandOp.Config)
+					kv.LogPrintf("applier update config: current %+v received %+v, num is old, skip", kv.configNum, commandOp.Config)
 				} else if commandOp.Config == kv.configNum+1 { // not updating and saw new
 					// no mater isreconf or not check if no pending, do migration
 					if _, ok := kv.cfgPending[commandOp.Config]; ok { // something pending
 						go func() { kv.cfgPendingCh <- CfgNotifyMsg{CfgNotifyMsgInfoRun, commandOp.Config} }()
-					} else { // no pendining  do nothing
+					} else { // no pending do nothing
 					}
 					kv.isReConf = true
 
@@ -374,27 +429,32 @@ func (kv *ShardKV) LogApplier() {
 					configUpdating := kv.mck.Query(kv.configNum + 1)
 					for i, _ := range kv.shardAccess {
 						if config.Shards[i] == kv.gid && configUpdating.Shards[i] != kv.gid {
+							// 禁用对将在下一个nextCfg中缺失的分片的访问
 							kv.shardAccess[i] = false
 						}
 					}
+
 					allUpdated()
 				} else {
 					panic(fmt.Sprintf("bad config update command %+v, current cft %+v", commandOp.Config, kv.configNum))
 				}
 				// else is updating just ignore
-				kv.lastMsgIndex = applyMsg.LogIndex
-
+				kv.lastMsgIndex = applyMsg.LogIndex // 记录上次消息索引
 				kv.mu.Unlock()
 				continue // next command
 			} else if commandOp.OpType == OpTypeConfigDone {
 				// here i think config done won't be duplicated
-				kv.LogPrintf("Receving config done isreconf %t, current cfg %+v, cfgdone %+v, access: %+v", kv.isReConf, kv.configNum, commandOp, kv.shardAccess)
+				kv.LogPrintf("Receiving config done isreconf %t, current cfg %+v, cfgdone %+v, access: %+v", kv.isReConf, kv.configNum, commandOp, kv.shardAccess)
 				kv.mu.Lock()
+				// 实现APPLY MSG 是MIGRATION DATA REPLY
 				if kv.isReConf && commandOp.Config == kv.configNum+1 && !kv.shardAccess[commandOp.Shard.ID] {
 
+					// 更新shard访问策略
 					kv.shardAccess[commandOp.Shard.ID] = true
+
+					// 将id为 commandOp.Shard.ID的shard迁移至此
 					kv.db[commandOp.Shard.ID] = commandOp.Shard
-					// update record
+					// update record: migrate
 					successRecordUnion(kv.successRecords, commandOp.ClientSuccess)
 
 					// if all shard received update cfg
@@ -410,8 +470,9 @@ func (kv *ShardKV) LogApplier() {
 				continue
 			}
 
-			ret := NotifyMsg{"", ""} //default ret ok
+			// Next is the normal data operation
 
+			ret := NotifyMsg{"", ""} //default ret ok
 			kv.mu.Lock()
 			// stop serving which is not in nextCfg
 			shard := key2shard(commandOp.Key)
@@ -440,17 +501,18 @@ func (kv *ShardKV) LogApplier() {
 				}
 				kv.lastMsgIndex = applyMsg.LogIndex
 
-				// set the request as the latest op for the client, for eleminate dup request
+				// set the request as the latest op for the client, Remove duplicate dup requests
+				// 去重
 				kv.SaveRecord(commandOp.OpId, ret)
 			}
 			kv.mu.Unlock()
 
-			// set the max term seem, so that whenever maxterm >= term saw by getState()
-			// that means the kvserver has seen all request from last server
+			// set the max term seem, so that whenever maxTerm >= term saw by getState()
+			// that means the kv-server has seen all request from last server
 			atomic.StoreInt64(&kv.raftNowTerm, int64(applyMsg.Term))
 
 			stateSize := kv.persister.RaftStateSize()
-			if kv.maxRaftState > 0 && stateSize > int(float64(kv.maxRaftState)*0.8) { // 0.8 as ratio
+			if kv.maxRaftState > 0 && stateSize > int(float64(kv.maxRaftState)*0.6) { // 0.65 as ratio
 				kv.LogPrintf("maxRaftState %d, stateSize %d, do snapshot", kv.maxRaftState, stateSize)
 				kv.mu.Lock()
 				snapshot := kv.NoLockSnapshot()
@@ -473,7 +535,7 @@ func (kv *ShardKV) LogApplier() {
 
 func mapUnion(dst map[string]string, src map[string]string) {
 	for k, v := range src {
-		dst[k] = v // aways use src value since it's from migration
+		dst[k] = v // always use src value since it's from migration
 	}
 }
 
@@ -490,70 +552,20 @@ func successRecordUnion(dst map[string]OpRecord, src map[string]OpRecord) {
 
 }
 
-func (kv *ShardKV) MigrationLoop() {
-
-	for !kv.killed() {
-
-		msg := <-kv.cfgPendingCh
-
-		kv.mu.Lock()
-		currentCfg := kv.mck.Query(kv.configNum)
-		if kv.configNum >= msg.Config { // avoid dup cfgdone
-			kv.LogPrintf("Migration loop recv old cfg :%+v cfg now %+v. do nothing", msg.Config, kv.configNum)
-			kv.mu.Unlock()
-			continue
-		}
-		kv.mu.Unlock()
-
-		nextCfg := kv.mck.Query(msg.Config)
-		kv.LogPrintf("Start migration from config %+v to %+v", currentCfg, nextCfg)
-
-		// for all updating shard, receive, if saw new  cfg, abort
-		git2Query := make(map[int][]int)
-
-		for shard, gid := range nextCfg.Shards {
-			if targetGid := currentCfg.Shards[shard]; gid == kv.gid && targetGid != gid { // shard does not belong to old but belongs to new
-				// only ask the server has the shards in currentCfg for data
-				if _, ok := git2Query[targetGid]; !ok {
-					git2Query[targetGid] = make([]int, 0)
-				}
-				git2Query[targetGid] = append(git2Query[targetGid], shard)
-			}
-		}
-
-		wg := sync.WaitGroup{}
-		for gid, shardIds := range git2Query {
-			for _, shardId := range shardIds {
-				wg.Add(1)
-				go func(gid int, shardId int) { // do in parallel, so one partion won' affect rest
-					reply := kv.sendMigrateShard(currentCfg, gid, shardId)
-					if reply.Err == OK {
-						_, _, isLeader := kv.rf.Start(Op{OpTypeConfigDone, "", "", nextCfg.Num, reply.Shard, reply.ClientSuccess, randstring(10)})
-						kv.LogPrintf("Recevied migration reply %+v from group %d, send cfgdone to raft, is leader %t", reply, gid, isLeader)
-					}
-					wg.Done()
-				}(gid, shardId)
-			}
-		}
-		wg.Wait()
-
-		// if pending nolonger leader, it's ok just quit
-		kv.mu.Lock()
-		delete(kv.cfgPending, nextCfg.Num)
-		kv.mu.Unlock()
-	}
-
-}
-
+// ConfigPoller 配置拉取轮询器
+// 独立线程定期查看是否有新的config, 如果有, 向raft提交
 func (kv *ShardKV) ConfigPoller() {
 	for !kv.killed() {
 		kv.mu.Lock()
 		var nextCfg shardmaster.Config
+
+		// 尝试获取最新的配置
 		nextCfg = kv.mck.Query(kv.configNum + 1)
 
+		// 提交new config， start command
 		submitCfgChange := func() {
 			commandOp := Op{OpTypeConfig, "", "", nextCfg.Num, ShardDB{}, nil, randstring(10)}
-			kv.LogPrintf("Submiting new cfg to raft. %+v, cfg %v", commandOp, commandOp.Config)
+			kv.LogPrintf("Submitting new cfg to raft. %+v, cfg %v", commandOp, commandOp.Config)
 			_, _, leader := kv.rf.Start(commandOp)
 
 			if leader {
@@ -580,7 +592,7 @@ func (kv *ShardKV) ConfigPoller() {
 					submitCfgChange()
 				}
 			}
-		} else { // not configuring
+		} else { // not configuring: 不再配置更新中
 			if nextCfg.Num == kv.configNum+1 {
 				kv.LogPrintf("Found config changes: old %+v new %+v, submit append", kv.configNum, nextCfg)
 				submitCfgChange()
@@ -605,12 +617,12 @@ type ConfigNumReply struct {
 }
 
 func (kv *ShardKV) ConfigNum(args *ConfigNumArgs, _ *ConfigNumReply) {
-	// kv.LogPrintf("receve config num %+v", args)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if args.Num > kv.configNum { // do nothing otherwise will skip the future update
+	if args.Num > kv.configNum { // do nothing, will skip the future update
 		return
 	}
+
 	if _, ok := kv.globalConfigNum[args.GID]; !ok {
 		kv.globalConfigNum[args.GID] = args.Num
 	}
@@ -618,6 +630,7 @@ func (kv *ShardKV) ConfigNum(args *ConfigNumArgs, _ *ConfigNumReply) {
 	if args.Num <= cfgNumBefore { // no update
 		return
 	}
+
 	cfgNumAfter := args.Num
 	kv.globalConfigNum[args.GID] = args.Num
 	if args.GID == kv.gid {
@@ -698,8 +711,8 @@ func (kv *ShardKV) ConfigBroadcastLoop() {
 		args.GID = kv.gid
 		kv.mu.Lock()
 		groups := kv.mck.Query(kv.configNum).Groups
-		for _, srv := range groups {
-			servers = append(servers, srv...)
+		for _, group := range groups {
+			servers = append(servers, group...)
 		}
 		args.Num = kv.configNum
 		kv.mu.Unlock()
@@ -709,35 +722,6 @@ func (kv *ShardKV) ConfigBroadcastLoop() {
 				// kv.LogPrintf("configNum %d send to server %s", args.Num, s)
 			}(server) // if not ok, doesn't matter
 		}
-	}
-}
-
-func (kv *ShardKV) PendingGC(currentTerm int) {
-	// gc for pending only called when saw op not self
-
-	// calling getstate in server is dangerous for deadlock
-	// currentTerm, _ := kv.rf.GetState()
-	kv.LogPrintf("Starting GC: current term is %d", currentTerm)
-	var pendingsToFail []*Pending
-
-	kv.mu.Lock()
-	if len(kv.pendingByOpId) != 0 {
-		for _, p := range kv.pendingByOpId {
-			// old term pending exists means failure
-			// should never gc term >= current even is not leader at line 252
-			// since it can become leader immediately with a higer term > currentTerm
-			if p.term < currentTerm {
-				pendingsToFail = append(pendingsToFail, p)
-			}
-		}
-		for _, p := range pendingsToFail {
-			kv.DeletePending(p) // delete all pending
-		}
-	}
-	kv.mu.Unlock()
-	for _, p := range pendingsToFail {
-		kv.LogPrintf("Pending %+v is marked as fail since it's term too old. current term %d", p, currentTerm)
-		p.notifyCh <- NotifyMsg{NotifyMsgInfoNotLeader, ""}
 	}
 }
 

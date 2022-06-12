@@ -47,7 +47,7 @@ type Clerk struct {
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
 
-	lastleaders    map[int]int
+	lastLeaders    map[int]int
 	id             string
 	requestcounter int64
 
@@ -69,7 +69,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.make_end = make_end
 	// You'll have to add code here.
 
-	ck.lastleaders = make(map[int]int)
+	ck.lastLeaders = make(map[int]int)
 	// gen unique id by now % seconds and obj addr
 	// ck.id = fmt.Sprintf("", time.Now().UnixNano()%10e9, &ck)
 	ck.id = randstring(5)
@@ -102,19 +102,19 @@ func (ck *Clerk) DoRequest(servicename string, args *OperationArgs, reply *Opera
 		shard := key2shard(args.Key)
 		gid := ck.config.Shards[shard]
 
-		if _, ok := ck.lastleaders[gid]; !ok {
-			ck.lastleaders[gid] = 0
+		if _, ok := ck.lastLeaders[gid]; !ok {
+			ck.lastLeaders[gid] = 0
 		}
-		lastleader := ck.lastleaders[gid]
+		lastLeader := ck.lastLeaders[gid]
 
 		if servers, ok := ck.config.Groups[gid]; ok {
 
-			for notok := 0; notok < len(servers); lastleader = (lastleader + 1) % len(servers) {
-				srv := ck.make_end(servers[lastleader])
+			for notok := 0; notok < len(servers); lastLeader = (lastLeader + 1) % len(servers) {
+				srv := ck.make_end(servers[lastLeader])
 
 				*reply = OperationReply{} // set reply to emtpy everytime
 
-				ck.LogPrintf("Calling %s to gid %d server %d with shard %d args %+v", servicename, gid, lastleader, shard, args)
+				ck.LogPrintf("Calling %s to gid %d server %d with shard %d args %+v", servicename, gid, lastLeader, shard, args)
 				ok := srv.Call(servicename, args, reply)
 				ck.LogPrintf("Calls return ok: %t reply: %+v", ok, reply)
 				// unaccessible or wrong leader
@@ -124,8 +124,8 @@ func (ck *Clerk) DoRequest(servicename string, args *OperationArgs, reply *Opera
 					//TODO need to inc reques id?
 					break
 				} else if ok { // good!
-					ck.lastleaders[gid] = lastleader
-					ck.LogPrintf("request %+v got reply from server %d: %+v", args, lastleader, reply)
+					ck.lastLeaders[gid] = lastLeader
+					ck.LogPrintf("request %+v got reply from server %d: %+v", args, lastLeader, reply)
 					ck.mu.Unlock()
 					return
 				} else { // not ok try next, maybe group has shutdown
