@@ -203,6 +203,7 @@ func (sm *ShardMaster) DoOp(commandOp Op, setReplyErr func(), setReplyOk func(No
 		setReplyOk(notifyMsg)
 		sm.LogPrintf("Got notification op %+v success: %+v", commandOp, notifyMsg)
 	}
+	close(pending.notifyCh)
 }
 
 func (sm *ShardMaster) DeletePending(p *Pending) { // should be called when holding mu
@@ -378,9 +379,9 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		reply.WrongLeader = true
 	}
 
-	setReplyOk := func(nmsg NotifyMsg) {
-		if nmsg.Info != NotifyMsgInfoJoinOK {
-			panic(fmt.Sprintf("bad notify %+v", nmsg))
+	setReplyOk := func(nMsg NotifyMsg) {
+		if nMsg.Info != NotifyMsgInfoJoinOK {
+			panic(fmt.Sprintf("bad notify %+v", nMsg))
 		}
 		reply.Err = OK
 	}
@@ -399,9 +400,9 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		reply.WrongLeader = true
 	}
 
-	setReplyOk := func(nmsg NotifyMsg) {
-		if nmsg.Info != NotifyMsgInfoLeaveOK {
-			panic(fmt.Sprintf("bad notify %+v", nmsg))
+	setReplyOk := func(nMsg NotifyMsg) {
+		if nMsg.Info != NotifyMsgInfoLeaveOK {
+			panic(fmt.Sprintf("bad notify %+v", nMsg))
 		}
 		reply.Err = OK
 	}
@@ -419,9 +420,9 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 		reply.WrongLeader = true
 	}
 
-	setReplyOk := func(nmsg NotifyMsg) {
-		if nmsg.Info != NotifyMsgInfoMoveOK {
-			panic(fmt.Sprintf("bad notify %+v", nmsg))
+	setReplyOk := func(nMsg NotifyMsg) {
+		if nMsg.Info != NotifyMsgInfoMoveOK {
+			panic(fmt.Sprintf("bad notify %+v", nMsg))
 		}
 		reply.Err = OK
 	}
@@ -448,12 +449,12 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 		reply.WrongLeader = true
 	}
 
-	setReplyOk := func(nmsg NotifyMsg) {
-		if nmsg.Info != NotifyMsgInfoQueryOK {
-			panic(fmt.Sprintf("bad notify %+v", nmsg))
+	setReplyOk := func(nMsg NotifyMsg) {
+		if nMsg.Info != NotifyMsgInfoQueryOK {
+			panic(fmt.Sprintf("bad notify %+v", nMsg))
 		}
-		retconfig := nmsg.RetValue.(Config)
-		reply.Config = retconfig
+		retConfig := nMsg.RetValue.(Config)
+		reply.Config = retConfig
 		reply.Err = OK
 	}
 	sm.DoOp(commandOp, setReplyErr, setReplyOk)

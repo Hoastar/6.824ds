@@ -60,7 +60,7 @@ func (ck *Clerk) LogPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-func (ck *Clerk) DoRequest(servicename string, args interface{}, reply interface{}, resetReply func(), isWrongLeader func() bool) {
+func (ck *Clerk) DoRequest(serviceName string, args interface{}, reply interface{}, resetReply func(), isNotWrongLeader func() bool) {
 	// args and reply are pointers
 
 	// serialized request
@@ -69,11 +69,11 @@ func (ck *Clerk) DoRequest(servicename string, args interface{}, reply interface
 	lastLeader := atomic.LoadInt64(&ck.lastLeader)
 	for {
 		resetReply()
-		ck.LogPrintf("Calling %s to server %d with args %+v", servicename, lastLeader, args)
-		ok := ck.servers[lastLeader].Call(servicename, args, reply)
+		ck.LogPrintf("Calling %s to server %d with args %+v", serviceName, lastLeader, args)
+		ok := ck.servers[lastLeader].Call(serviceName, args, reply)
 		ck.LogPrintf("Calls return ok: %t reply: %+v", ok, reply)
 		// unaccessible or wrong leader
-		if ok && isWrongLeader() {
+		if ok && isNotWrongLeader() { // return ok and usable leader
 			atomic.StoreInt64(&ck.lastLeader, lastLeader)
 			break
 		} else { // next server if return fail or wrong server. An unacesssible server will return fail
@@ -84,7 +84,7 @@ func (ck *Clerk) DoRequest(servicename string, args interface{}, reply interface
 	}
 	ck.mu.Unlock()
 
-	ck.LogPrintf("%s request %+v got reply from server %d: %+v", servicename, args, lastLeader, reply)
+	ck.LogPrintf("%s request %+v got reply from server %d: %+v", serviceName, args, lastLeader, reply)
 }
 
 func (ck *Clerk) Query(num int) Config {
@@ -97,11 +97,12 @@ func (ck *Clerk) Query(num int) Config {
 	resetReply := func() {
 		reply = QueryReply{}
 	}
-	isWrongLeader := func() bool {
+	isNotWrongLeader := func() bool {
+		// return ture
 		return reply.WrongLeader == false
 	}
 
-	ck.DoRequest("ShardMaster.Query", args, &reply, resetReply, isWrongLeader)
+	ck.DoRequest("ShardMaster.Query", args, &reply, resetReply, isNotWrongLeader)
 
 	return reply.Config
 }
@@ -116,11 +117,11 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	resetReply := func() {
 		reply = JoinReply{}
 	}
-	isWrongLeader := func() bool {
+	isNotWrongLeader := func() bool {
 		return reply.WrongLeader == false
 	}
 
-	ck.DoRequest("ShardMaster.Join", args, &reply, resetReply, isWrongLeader)
+	ck.DoRequest("ShardMaster.Join", args, &reply, resetReply, isNotWrongLeader)
 
 }
 
@@ -134,11 +135,11 @@ func (ck *Clerk) Leave(gids []int) {
 	resetReply := func() {
 		reply = LeaveReply{}
 	}
-	isWrongLeader := func() bool {
+	isNotWrongLeader := func() bool {
 		return reply.WrongLeader == false
 	}
 
-	ck.DoRequest("ShardMaster.Leave", args, &reply, resetReply, isWrongLeader)
+	ck.DoRequest("ShardMaster.Leave", args, &reply, resetReply, isNotWrongLeader)
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
@@ -153,9 +154,9 @@ func (ck *Clerk) Move(shard int, gid int) {
 	resetReply := func() {
 		reply = MoveReply{}
 	}
-	isWrongLeader := func() bool {
+	isNotWrongLeader := func() bool {
 		return reply.WrongLeader == false
 	}
 
-	ck.DoRequest("ShardMaster.Move", args, &reply, resetReply, isWrongLeader)
+	ck.DoRequest("ShardMaster.Move", args, &reply, resetReply, isNotWrongLeader)
 }
